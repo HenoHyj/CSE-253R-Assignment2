@@ -6,7 +6,6 @@ Both melody and chords generated from Extended Markov Chain models
 
 import os
 import random
-import math
 from collections import Counter, defaultdict
 from glob import glob
 import numpy as np
@@ -26,8 +25,7 @@ midi_files = (glob(os.path.join(MAESTRO_DIR, '**/*.midi'), recursive=True) +
 if not midi_files:
     midi_files = glob('*.mid')
 
-midi_files = midi_files[:200]  # Use more files for better chord learning
-print(f"Using {len(midi_files)} MIDI files")
+print(f"Using ALL {len(midi_files)} MIDI files from MAESTRO dataset")
 
 # %%
 # Enhanced tokenizer and data extraction
@@ -387,11 +385,11 @@ chord_model.train(chord_sequences)
 
 # %%
 # Enhanced MIDI generation with LEARNED chords
-def create_midi_with_learned_chords(melody, filename="melody_with_learned_chords.mid", tempo=120):
-    """Create MIDI file with melody and LEARNED chord accompaniment"""
+def create_midi_with_learned_chords(melody, filename="melody_with_learned_chords.mid", tempo=100):
+    """Create MIDI file with melody and LEARNED chord accompaniment (90+ seconds)"""
     
     # Generate chord progression using the trained model
-    chord_progression_length = len(melody) // 8  # One chord per 8 melody notes
+    chord_progression_length = max(8, len(melody) // 12)  # More varied chord changes
     learned_chords = chord_model.generate_chord_progression(chord_progression_length)
     
     MyMIDI = MIDIFile(2)  # 2 tracks: melody and chords
@@ -399,45 +397,57 @@ def create_midi_with_learned_chords(melody, filename="melody_with_learned_chords
     # Track 0: Melody
     melody_track = 0
     MyMIDI.addTrackName(melody_track, 0, "Melody")
-    MyMIDI.addTempo(melody_track, 0, tempo)
+    MyMIDI.addTempo(melody_track, 0, tempo)  # Slower tempo for longer duration
     
     # Track 1: Learned Chords  
     chord_track = 1
     MyMIDI.addTrackName(chord_track, 0, "Learned Chords")
     MyMIDI.addTempo(chord_track, 0, tempo)
     
-    # Add melody
+    # Add melody with varied rhythm for longer duration
     time = 0
     for i, pitch in enumerate(melody):
-        duration = 1.0
+        # Create more varied rhythmic patterns
+        if i % 16 == 0:  # Downbeat - longer note
+            duration = 2.0
+        elif i % 8 == 0:  # Strong beat
+            duration = 1.5
+        elif i % 4 == 0:  # Beat
+            duration = 1.0
+        elif i % 2 == 1:  # Syncopation
+            duration = 0.75
+        else:
+            duration = 0.5
         
-        if i % 4 == 0:
-            duration = 1.5 if random.random() < 0.25 else 1.0
-        elif i % 2 == 1:
-            duration = 0.5 if random.random() < 0.2 else 1.0
+        # Add some occasional longer phrases
+        if random.random() < 0.1:  # 10% chance of longer note
+            duration *= 1.5
         
         MyMIDI.addNote(melody_track, 0, pitch, time, duration, 100)
         time += duration
     
-    # Add learned chords
+    # Add learned chords with longer durations
     chord_time = 0
-    notes_per_chord = len(melody) // len(learned_chords)
+    melody_duration = time  # Total melody duration
+    chord_duration_per_chord = melody_duration / len(learned_chords)
     
     for i, (root, chord_type) in enumerate(learned_chords):
-        chord_duration = notes_per_chord * 1.0
-        
         # Convert learned chord to actual pitches
         chord_pitches = chord_symbol_to_pitches(root, chord_type)
         
-        # Add each note in the chord
+        # Add each note in the chord with full duration
         for chord_note in chord_pitches:
             if 36 <= chord_note <= 84:
-                MyMIDI.addNote(chord_track, 1, chord_note, chord_time, chord_duration, 70)
+                MyMIDI.addNote(chord_track, 1, chord_note, chord_time, chord_duration_per_chord, 60)
         
-        chord_time += chord_duration
+        chord_time += chord_duration_per_chord
     
     with open(filename, "wb") as f:
         MyMIDI.writeFile(f)
+    
+    # Calculate and display estimated duration
+    estimated_duration = time
+    print(f"   Estimated duration: {estimated_duration:.1f} seconds")
     
     return filename
 
@@ -460,57 +470,58 @@ def chord_symbol_to_pitches(root, chord_type):
 
 # %%
 # Generate melodies with LEARNED chord accompaniment
-print("\n=== GENERATING WITH LEARNED CHORDS ===")
+print("\n=== GENERATING SYMBOLIC MUSIC (90+ seconds each) ===")
 
-# Task 1: Unconditioned with learned chords
-print("\nTask 1: Unconditioned Generation with Learned Chords")
-for i in range(3):
-    temp = [0.8, 1.0, 1.2][i]
-    melody = melody_model.generate_musical_sequence(length=64, temperature=temp)
+# Task 1: Unconditioned Generation - symbolic_unconditioned.mid
+print("\nTask 1: Unconditioned Generation")
+# Generate longer melody for 90+ seconds (approximately 180-200 notes at 120 BPM)
+melody = melody_model.generate_musical_sequence(length=200, temperature=1.0)
+
+print(f"Unconditioned melody: {len(melody)} notes")
+print(f"Range: {min(melody)}-{max(melody)}")
+
+# Analyze step motion
+intervals = [melody[j+1] - melody[j] for j in range(len(melody)-1)]
+steps = sum(1 for iv in intervals if abs(iv) <= 2)
+print(f"Step motion: {steps}/{len(intervals)} ({steps/len(intervals)*100:.1f}%)")
+
+# Generate with LEARNED chords
+filename = "symbolic_unconditioned.mid"
+create_midi_with_learned_chords(melody, filename)
+print(f"Saved: {filename}")
+
+# Task 2: Conditioned Generation - symbolic_conditioned.mid
+print("\nTask 2: Conditioned Generation")
+test_melodies = melody_sequences[int(0.9 * len(melody_sequences)):]
+
+if len(test_melodies) > 0:
+    source = test_melodies[0]  # Use first test melody as source
+    prefix = source[:16]  # Longer prefix for better conditioning
     
-    print(f"\nMelody {i+1} (temp={temp}): {len(melody)} notes")
-    print(f"Range: {min(melody)}-{max(melody)}")
+    # Generate conditioned melody
+    context = tuple(prefix[-3:]) if len(prefix) >= 3 else tuple([60, 62, 64])
+    conditioned = list(prefix)
     
-    # Analyze step motion
-    intervals = [melody[j+1] - melody[j] for j in range(len(melody)-1)]
+    # Generate approximately 200 notes for 90+ seconds
+    for _ in range(200 - len(conditioned)):
+        next_note = melody_model.sample_musical_next_note(context, temperature=1.0)
+        next_note = max(48, min(84, next_note))
+        conditioned.append(next_note)
+        context = tuple(conditioned[-3:])
+    
+    print(f"Conditioned melody: {len(conditioned)} notes")
+    print(f"Prefix: {prefix[:8]}...")
+    print(f"Range: {min(conditioned)}-{max(conditioned)}")
+    
+    intervals = [conditioned[j+1] - conditioned[j] for j in range(len(conditioned)-1)]
     steps = sum(1 for iv in intervals if abs(iv) <= 2)
     print(f"Step motion: {steps}/{len(intervals)} ({steps/len(intervals)*100:.1f}%)")
     
-    # Generate with LEARNED chords
-    filename = f"learned_chords_unconditioned_{i+1}.mid"
-    create_midi_with_learned_chords(melody, filename)
+    filename = "symbolic_conditioned.mid"
+    create_midi_with_learned_chords(conditioned, filename)
     print(f"Saved: {filename}")
-
-# Task 2: Conditioned with learned chords
-print("\nTask 2: Conditioned Generation with Learned Chords")
-test_melodies = melody_sequences[int(0.9 * len(melody_sequences)):]
-
-for i in range(3):
-    if i < len(test_melodies):
-        source = test_melodies[i]
-        prefix = source[:12]
-        
-        # Generate conditioned melody
-        context = tuple(prefix[-3:]) if len(prefix) >= 3 else tuple([60, 62, 64])
-        conditioned = list(prefix)
-        
-        for _ in range(64 - len(conditioned)):
-            next_note = melody_model.sample_musical_next_note(context, temperature=1.0)
-            next_note = max(48, min(84, next_note))
-            conditioned.append(next_note)
-            context = tuple(conditioned[-3:])
-        
-        print(f"\nConditioned melody {i+1}: {len(conditioned)} notes")
-        print(f"Prefix: {prefix[:6]}...")
-        print(f"Range: {min(conditioned)}-{max(conditioned)}")
-        
-        intervals = [conditioned[j+1] - conditioned[j] for j in range(len(conditioned)-1)]
-        steps = sum(1 for iv in intervals if abs(iv) <= 2)
-        print(f"Step motion: {steps}/{len(intervals)} ({steps/len(intervals)*100:.1f}%)")
-        
-        filename = f"learned_chords_conditioned_{i+1}.mid"
-        create_midi_with_learned_chords(conditioned, filename)
-        print(f"Saved: {filename}")
+else:
+    print("No test melodies available for conditioning")
 
 # %%
 print(f"\nModel Statistics:")
@@ -519,93 +530,10 @@ print(f"- Chord vocabulary: {len(chord_model.chord_vocab)} unique chord types")
 print(f"- Melody contexts: {len(melody_model.transitions)}")
 print(f"- Chord contexts: {len(chord_model.transitions)}")
 
-# %%
-# EVALUATION SECTION (matching original assignment2.py)
-print("\n=== EVALUATION ===")
-
-# Split data into train/validation/test
-train_melodies = melody_sequences[:int(0.8 * len(melody_sequences))]
-val_melodies = melody_sequences[int(0.8 * len(melody_sequences)):int(0.9 * len(melody_sequences))]
-test_melodies = melody_sequences[int(0.9 * len(melody_sequences)):]
-
-print(f"Data split: {len(train_melodies)} train, {len(val_melodies)} val, {len(test_melodies)} test")
-
-# Calculate perplexity on test set
-def calculate_perplexity(model, sequences):
-    """Calculate perplexity of the model on given sequences"""
-    total_log_prob = 0
-    total_tokens = 0
-    
-    for sequence in sequences:
-        if len(sequence) <= model.order:
-            continue
-            
-        for i in range(len(sequence) - model.order):
-            context = tuple(sequence[i:i + model.order])
-            next_token = sequence[i + model.order]
-            
-            if context in model.transitions:
-                count = model.transitions[context][next_token]
-                total_count = model.context_counts[context]
-                prob = count / total_count
-                
-                if prob > 0:
-                    total_log_prob += math.log(prob)
-                    total_tokens += 1
-    
-    if total_tokens == 0:
-        return float('inf')
-    
-    avg_log_prob = total_log_prob / total_tokens
-    perplexity = math.exp(-avg_log_prob)
-    return perplexity
-
-# Calculate perplexity for melody model
-melody_perplexity = calculate_perplexity(melody_model, test_melodies)
-print(f"Melody model perplexity on test set: {melody_perplexity:.2f}")
-
-# Calculate perplexity for chord model
-test_chords = chord_sequences[int(0.9 * len(chord_sequences)):]
-chord_perplexity = calculate_perplexity(chord_model, test_chords)
-print(f"Chord model perplexity on test set: {chord_perplexity:.2f}")
-
-# Analyze musical quality metrics
-print("\n=== MUSICAL QUALITY ANALYSIS ===")
-
-def analyze_musical_quality(melodies, name):
-    """Analyze musical quality metrics"""
-    all_intervals = []
-    all_ranges = []
-    step_motions = []
-    
-    for melody in melodies:
-        if len(melody) < 2:
-            continue
-            
-        # Calculate intervals
-        intervals = [melody[i+1] - melody[i] for i in range(len(melody)-1)]
-        all_intervals.extend(intervals)
-        
-        # Calculate range
-        melody_range = max(melody) - min(melody)
-        all_ranges.append(melody_range)
-        
-        # Calculate step motion percentage
-        steps = sum(1 for iv in intervals if abs(iv) <= 2)
-        if len(intervals) > 0:
-            step_motions.append(steps / len(intervals) * 100)
-    
-    print(f"\n{name} Analysis:")
-    print(f"- Average step motion: {np.mean(step_motions):.1f}%")
-    print(f"- Average range: {np.mean(all_ranges):.1f} semitones")
-    print(f"- Interval distribution:")
-    interval_counts = Counter(all_intervals)
-    for interval in sorted(interval_counts.keys())[:10]:  # Show top 10
-        count = interval_counts[interval]
-        percentage = count / len(all_intervals) * 100
-        print(f"  {interval:+2d}: {percentage:5.1f}%")
-
-# Analyze training data
-analyze_musical_quality(train_melodies, "Training Data")
+print("\n=== ASSIGNMENT 2 COMPLETE ===")
+print("Generated files:")
+print("- symbolic_unconditioned.mid")
+print("- symbolic_conditioned.mid")
+print("\nRun 'python evaluation.py' for comprehensive evaluation and baseline comparison!")
 
 # %% 
